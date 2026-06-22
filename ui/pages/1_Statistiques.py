@@ -10,6 +10,18 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from core.stats.sales import parse_sales_csv
+from core.weather.open_meteo import fetch_monthly_weather
+from core.calendar.fr_calendar import public_holidays_by_month, school_holidays_by_month
+
+
+@st.cache_data(ttl=3600)
+def _cached_weather(lat: float, lon: float, start: str, end: str):
+    return fetch_monthly_weather(lat, lon, start, end)
+
+
+@st.cache_data(ttl=86400)
+def _cached_school_hols(months_tuple: tuple, zone: str):
+    return school_holidays_by_month(list(months_tuple), zone)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +47,13 @@ with st.sidebar:
     unite_label = st.text_input(
         "Unité des valeurs", value="kg", help="Ex: kg, pièces, €"
     )
+    st.divider()
+    st.subheader("Localisation")
+    city_name = st.text_input("Ville", value="Le Havre")
+    lat_col, lon_col = st.columns(2)
+    lat = lat_col.number_input("Latitude", value=49.4938, step=0.01, format="%.4f")
+    lon = lon_col.number_input("Longitude", value=0.1077, step=0.01, format="%.4f")
+    zone = st.selectbox("Zone scolaire", ["A", "B", "C"], index=1)
 
 if not uploaded:
     st.info("Importe un fichier CSV de ventes dans le panneau de gauche pour commencer.")
@@ -97,7 +116,7 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab_global, tab_detail = st.tabs(["Vue globale", "Détail produit"])
+tab_global, tab_detail, tab_context = st.tabs(["Vue globale", "Détail produit", "Météo & Calendrier"])
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -235,25 +254,42 @@ with tab_detail:
     # Initialize the widget's own session state key on first load
     if "multiselect_products" not in st.session_state:
         st.session_state["multiselect_products"] = all_products[:]
+    if "search_results" not in st.session_state:
+        st.session_state["search_results"] = []
 
     # ── Sélection groupée par mot-clé ─────────────────────────────────────
-    search_quick = st.text_input(
+    # on_change fires when the user presses Enter or blurs the field
+    def _run_search():
+        term = st.session_state.get("search_quick", "").strip().lower()
+        st.session_state["search_results"] = (
+            [p for p in all_products if term in p.lower()] if term else []
+        )
+
+    sc1, sc2 = st.columns([5, 1])
+    sc1.text_input(
         "Sélection groupée par mot-clé",
-        placeholder="Ex: melon, citron... — puis Ajouter ou Seulement",
+        placeholder="Ex: melon, citron...",
         key="search_quick",
+        on_change=_run_search,
     )
-    if search_quick.strip():
-        matching = [p for p in all_products if search_quick.strip().lower() in p.lower()]
-        mc1, mc2, mc3 = st.columns([2, 2, 8])
-        if mc1.button(f"Ajouter ({len(matching)})", disabled=not matching):
+    if sc2.button("Rechercher"):
+        _run_search()
+
+    matching = st.session_state["search_results"]
+    if matching:
+        to_add = st.multiselect(
+            f"{len(matching)} résultat(s) — affiner avant d'ajouter :",
+            options=matching,
+            default=matching,
+        )
+        mc1, mc2, _ = st.columns([2, 2, 8])
+        if mc1.button(f"Ajouter ({len(to_add)})", disabled=not to_add):
             current = list(st.session_state.get("multiselect_products", []))
-            st.session_state["multiselect_products"] = list(dict.fromkeys(current + matching))
-        if mc2.button(f"Seulement ({len(matching)})", disabled=not matching):
-            st.session_state["multiselect_products"] = matching[:]
-        if matching:
-            mc3.caption(f"Correspond à : {', '.join(matching[:8])}{'...' if len(matching) > 8 else ''}")
-        else:
-            mc3.caption("Aucun produit correspondant.")
+            st.session_state["multiselect_products"] = list(dict.fromkeys(current + to_add))
+        if mc2.button(f"Seulement ({len(to_add)})", disabled=not to_add):
+            st.session_state["multiselect_products"] = to_add[:]
+    elif st.session_state.get("search_quick", "").strip():
+        st.caption("Aucun produit correspondant.")
 
     # ── Tout sélectionner / Tout désélectionner ───────────────────────────
     btn1, btn2, _ = st.columns([1.2, 1.5, 9.3])
@@ -313,6 +349,44 @@ with tab_detail:
 
     render_chart(df_pivot, chart_type_detail, y_title=y_label_d, height=max(400, n * 8))
 
+    # ── Highlights : meilleurs mois ───────────────────────────────────────
+    st.divider()
+    st.subheader("Meilleurs mois")
+
+    df_highlights = (
+        df_sel.groupby(["mois", "mois_label"])[value_col_d]
+        .sum()
+        .reset_index()
+        .sort_values(value_col_d, ascending=False)
+        .reset_index(drop=True)
+    )
+
+    total_val = df_highlights[value_col_d].sum()
+    n_show = min(3, len(df_highlights))
+    rank_labels = ["Meilleur mois", "2e mois", "3e mois"]
+
+    h_cols = st.columns(n_show)
+    for i in range(n_show):
+        row = df_highlights.iloc[i]
+        pct = row[value_col_d] / total_val * 100 if total_val > 0 else 0
+        with h_cols[i]:
+            st.metric(
+                label=f"{rank_labels[i]} : {row['mois_label']}",
+                value=f"{row[value_col_d]:,.1f} {y_label_d}",
+                delta=f"{pct:.0f}% du total",
+                delta_color="off",
+            )
+            if len(selected_products) > 1:
+                best_prod = (
+                    df_sel[df_sel["mois"] == row["mois"]]
+                    .groupby("designation")[value_col_d]
+                    .sum()
+                    .idxmax()
+                )
+                st.caption(f"Leadeur : {best_prod}")
+
+    st.divider()
+
     # Tableau récapitulatif
     with st.expander("Récapitulatif par produit", expanded=len(selected_products) <= 20):
         recap = (
@@ -327,3 +401,114 @@ with tab_detail:
         )
         recap.columns = ["Produit", f"Total ({unite_label})", f"Moy/mois ({unite_label})", f"Moy/jour ({unite_label})"]
         st.dataframe(recap, hide_index=True, use_container_width=True)
+
+# ── TAB 3 : Météo & Calendrier ────────────────────────────────────────────────
+
+with tab_context:
+    st.subheader(f"Météo & Calendrier — {city_name}")
+
+    start_str = months[0].strftime("%Y-%m-%d")
+    end_str = months[-1].strftime("%Y-%m-%d")
+
+    # ── Fetch weather ─────────────────────────────────────────────────────
+    with st.spinner("Chargement des données météo…"):
+        try:
+            df_weather = _cached_weather(lat, lon, start_str, end_str)
+            weather_ok = True
+        except Exception as exc:
+            st.warning(f"Météo indisponible : {exc}")
+            df_weather = pd.DataFrame(columns=["mois", "temp_mean", "precip_sum"])
+            weather_ok = False
+
+    # ── Fetch calendar ────────────────────────────────────────────────────
+    with st.spinner("Chargement du calendrier scolaire…"):
+        pub_hols = public_holidays_by_month(months)
+        try:
+            school_hols = _cached_school_hols(tuple(months), zone)
+        except Exception:
+            school_hols = {m.replace(day=1): None for m in months}
+
+    # ── Build combined table ──────────────────────────────────────────────
+    sales_by_month = (
+        df.groupby("mois")["valeur"]
+        .sum()
+        .reset_index()
+        .rename(columns={"valeur": "ventes"})
+    )
+
+    rows = []
+    for ts in months:
+        key = ts.replace(day=1)
+        label = month_label(ts)
+        ventes = sales_by_month.loc[sales_by_month["mois"] == ts, "ventes"]
+        ventes = ventes.values[0] if len(ventes) else 0.0
+
+        w = df_weather[df_weather["mois"] == key] if weather_ok else pd.DataFrame()
+        temp = f"{w['temp_mean'].values[0]:.1f} °C" if len(w) else "—"
+        precip = f"{w['precip_sum'].values[0]:.0f} mm" if len(w) else "—"
+
+        hols = pub_hols.get(key, [])
+        hols_str = ", ".join(hols) if hols else "—"
+
+        school = school_hols.get(key)
+        school_str = school if school else "—"
+
+        rows.append({
+            "Mois": label,
+            f"Ventes ({unite_label})": round(ventes, 1),
+            "Temp. moy.": temp,
+            "Précip.": precip,
+            "Jours fériés": hols_str,
+            f"Vacances (Zone {zone})": school_str,
+        })
+
+    df_ctx = pd.DataFrame(rows)
+    st.dataframe(df_ctx, hide_index=True, use_container_width=True)
+
+    # ── Charts ────────────────────────────────────────────────────────────
+    if weather_ok and not df_weather.empty:
+        st.divider()
+
+        # Merge sales + weather on the same months
+        df_plot = sales_by_month.copy()
+        df_plot["mois_label"] = df_plot["mois"].apply(month_label)
+        df_weather["mois_label"] = df_weather["mois"].apply(month_label)
+        df_merged = df_plot.merge(df_weather[["mois", "temp_mean", "precip_sum"]], on="mois", how="left")
+        df_merged["mois_label"] = df_merged["mois"].apply(month_label)
+        x_order = df_merged["mois_label"].tolist()
+
+        # ── Ventes + Température (dual axis) ─────────────────────────────
+        st.markdown("**Ventes vs Température**")
+        base = alt.Chart(df_merged).encode(
+            x=alt.X("mois_label:O", sort=x_order, title="Mois",
+                     axis=alt.Axis(labelAngle=-45))
+        )
+        bars = base.mark_bar(opacity=0.6, color="#4C78A8").encode(
+            y=alt.Y("ventes:Q", title=f"Ventes ({unite_label})", axis=alt.Axis(titleColor="#4C78A8"))
+        )
+        line_temp = base.mark_line(point=True, color="#E45756").encode(
+            y=alt.Y("temp_mean:Q", title="Température (°C)",
+                     scale=alt.Scale(zero=False),
+                     axis=alt.Axis(titleColor="#E45756"))
+        )
+        chart_dual = (
+            alt.layer(bars, line_temp)
+            .resolve_scale(y="independent")
+            .properties(height=300)
+        )
+        st.altair_chart(chart_dual, use_container_width=True)
+
+        # ── Précipitations ────────────────────────────────────────────────
+        st.markdown("**Précipitations mensuelles**")
+        chart_precip = (
+            alt.Chart(df_merged)
+            .mark_bar(color="#76B7B2")
+            .encode(
+                x=alt.X("mois_label:O", sort=x_order, title="Mois",
+                          axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y("precip_sum:Q", title="Précipitations (mm)"),
+                tooltip=["mois_label:O", "precip_sum:Q"],
+            )
+            .properties(height=200)
+        )
+        st.altair_chart(chart_precip, use_container_width=True)

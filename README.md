@@ -96,7 +96,12 @@ Les valeurs peuvent contenir l'unité directement dans la cellule (ex: `30,515 k
 #### Graphiques disponibles
 
 - **Vue globale** : classement des produits sur 3 / 6 / 12 mois, en valeur brute ou par jour
-- **Détail produit** : sélection mono ou multi-produits, bar chart mensuel, KPIs (pic, moyenne)
+- **Détail produit** : sélection mono ou multi-produits, bar chart mensuel, KPIs (pic, moyenne), highlights meilleurs mois, sélection groupée par mot-clé
+- **Météo & Calendrier** : ventes vs température (axe dual), précipitations, jours fériés français, vacances scolaires par zone (A/B/C) via l'API gouvernementale
+
+#### Localisation météo
+
+Dans le panneau de gauche, configure la **ville**, la **latitude/longitude** et la **zone scolaire** pour obtenir les données contextuelles. Par défaut : Le Havre (49.4938, 0.1077), Zone B.
 
 ---
 
@@ -180,6 +185,7 @@ fruits-advisor/
 - [x] Calcul PUM normalisé (€/kg)
 - [x] Interface Streamlit upload + tableau + filtres + export CSV
 - [x] Page Statistiques : import CSV ventes, vue globale + détail produit
+- [x] Onglet Météo & Calendrier : Open-Meteo + jours fériés + vacances scolaires
 
 ### V1 (à venir)
 - [ ] Historique des ventes (import caisse)
