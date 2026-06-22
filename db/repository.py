@@ -8,7 +8,62 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from db.models import Fournisseur, Mercuriale, ProduitTarif
+from db.models import Fournisseur, Mercuriale, Produit, ProduitTarif
+
+
+def list_fournisseurs(session: Session) -> pd.DataFrame:
+    """Return all fournisseurs with their mercuriale count and latest date."""
+    sql = text("""
+        SELECT
+            f.id,
+            f.nom,
+            COUNT(m.id)          AS nb_mercuriales,
+            MAX(m.date_tarif)    AS derniere_mercuriale
+        FROM fournisseurs f
+        LEFT JOIN mercuriales m ON m.fournisseur_id = f.id
+        GROUP BY f.id, f.nom
+        ORDER BY f.nom
+    """)
+    with session.bind.connect() as conn:
+        return pd.read_sql(sql, conn)
+
+
+def rename_fournisseur(session: Session, fournisseur_id: int, new_name: str) -> None:
+    """Rename a fournisseur in place."""
+    f = session.get(Fournisseur, fournisseur_id)
+    if f:
+        f.nom = new_name
+        session.commit()
+
+
+def delete_mercuriale(session: Session, mercuriale_id: int) -> None:
+    """Delete a mercuriale and all its ProduitTarif rows (cascade via ORM)."""
+    m = session.get(Mercuriale, mercuriale_id)
+    if m:
+        session.delete(m)
+        session.commit()
+
+
+def get_mercuriale_produits(session: Session, mercuriale_id: int) -> pd.DataFrame:
+    """Return all product lines for a given mercuriale."""
+    sql = text("""
+        SELECT
+            pt.nom_produit,
+            pt.origine,
+            pt.local,
+            pt.colisage,
+            pt.unite,
+            pt.certification,
+            pt.prix_colis_1_4,
+            pt.prix_colis_5_plus,
+            pt.pum,
+            pt.unite_pum
+        FROM produits_tarif pt
+        WHERE pt.mercuriale_id = :mid
+        ORDER BY pt.nom_produit
+    """)
+    with session.bind.connect() as conn:
+        return pd.read_sql(sql, conn, params={"mid": mercuriale_id})
 
 
 def save_mercuriale(
@@ -98,6 +153,43 @@ def get_latest_prices(session: Session) -> pd.DataFrame:
             WHERE m2.fournisseur_id = m.fournisseur_id
         )
         ORDER BY f.nom, pt.nom_produit
+    """)
+    with session.bind.connect() as conn:
+        return pd.read_sql(sql, conn)
+
+
+def import_catalogue(session: Session, df: pd.DataFrame) -> int:
+    """
+    Upsert catalogue products from a parsed DataFrame.
+    Existing rows (same code_article) are updated; new ones are inserted.
+    Returns the number of rows processed.
+    """
+    for _, row in df.iterrows():
+        session.merge(Produit(
+            code_article=row["code_article"],
+            designation=row.get("designation") or "",
+            famille=row.get("famille") or None,
+            fournisseur=row.get("fournisseur") or None,
+            ref_fournis=row.get("ref_fournis") or None,
+            note=row.get("note") or None,
+        ))
+    session.commit()
+    return len(df)
+
+
+def get_catalogue(session: Session) -> pd.DataFrame:
+    """Return the full internal product catalogue."""
+    sql = text("""
+        SELECT
+            code_article,
+            designation,
+            famille,
+            fournisseur,
+            ref_fournis,
+            note,
+            imported_at
+        FROM produits
+        ORDER BY famille, designation
     """)
     with session.bind.connect() as conn:
         return pd.read_sql(sql, conn)

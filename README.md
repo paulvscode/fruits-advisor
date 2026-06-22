@@ -1,4 +1,4 @@
-# Fruits Advisor
+# StockSage
 
 Outil d'aide à la décision pour l'optimisation des commandes de fruits et légumes frais dans un réseau de magasins bio.
 
@@ -17,7 +17,7 @@ Ingère les mercuriales fournisseurs (XLSX, PDF, email), calcule un Prix Unitair
 
 ```bash
 git clone <url-du-repo>
-cd fruits-advisor
+cd stocksage
 pip install -r requirements.txt
 ```
 
@@ -37,9 +37,12 @@ L'interface s'ouvre à **http://localhost:8501**
 
 ### 0. Navigation
 
-L'application comporte deux pages accessibles via le menu latéral gauche :
-- **Fruits Advisor** — import, analyse et enregistrement des mercuriales fournisseurs
+L'application comporte trois pages accessibles via le menu latéral gauche :
+- **StockSage** — import, analyse et enregistrement des mercuriales fournisseurs
 - **Statistiques** — visualisation de l'historique des ventes
+- **Fournisseurs** — gestion des fournisseurs et suppression de mercuriales
+- **Catalogue** — import et visualisation du référentiel produits interne
+- **Feuille de route** — état de l'application et prochaines étapes (aussi accessible via bouton en haut à droite de la page principale)
 
 ---
 
@@ -93,7 +96,7 @@ Dans chaque onglet, un panneau **Filtres** permet de :
 
 ### 4. Enregistrer en base
 
-Le bouton **"Enregistrer en base"** sauvegarde la mercuriale (fournisseur + date + tous les produits) dans la base SQLite locale (`data/fruits_advisor.db`).
+Le bouton **"Enregistrer en base"** sauvegarde la mercuriale (fournisseur + date + tous les produits) dans la base SQLite locale (`data/stocksage.db`).
 
 L'historique de tous les imports est visible sur la page d'accueil quand aucune mercuriale n'est chargée.
 
@@ -166,7 +169,7 @@ Le panneau **"Alertes ETL"** signale les anomalies détectées lors du parsing :
 ## Structure du projet
 
 ```
-fruits-advisor/
+stocksage/
 ├── core/
 │   ├── etl/
 │   │   ├── parsers.py       # Parsing XLSX, PDF (Presto'Bio) et email texte libre
@@ -228,6 +231,8 @@ fruits-advisor/
 - [x] Date du tarif sur chaque import
 - [x] Base SQLite : stockage par fournisseur / date (Fournisseur, Mercuriale, ProduitTarif)
 - [x] Interface Streamlit upload + tableau + filtres + export CSV + historique
+- [x] Page Fournisseurs : renommage fournisseur, suppression mercuriale
+- [x] Page Catalogue : import CSV du référentiel interne (Code Article, Désignation, Famille, Fournisseur, Ref Fournis)
 - [x] Page Statistiques : import CSV ventes, vue globale + détail produit
 - [x] Onglet Météo & Calendrier : Open-Meteo + jours fériés + vacances scolaires
 

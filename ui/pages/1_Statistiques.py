@@ -25,7 +25,7 @@ def _cached_school_hols(months_tuple: tuple, zone: str):
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="Statistiques — Fruits Advisor", layout="wide")
+st.set_page_config(page_title="Statistiques — StockSage", layout="wide")
 st.title("Statistiques des ventes")
 st.caption("Analyse de l'historique des ventes par produit")
 

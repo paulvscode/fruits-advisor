@@ -1,4 +1,4 @@
-# CLAUDE.md — fruits-advisor
+# CLAUDE.md — stocksage
 
 Outil d'aide à la décision pour l'optimisation des commandes de fruits et légumes frais dans un réseau de magasins bio.
 
@@ -194,7 +194,7 @@ Produit (SKU/Nom) | Qté Suggérée | Unité | Fournisseur | PUM (€) | Coût T
 ## STRUCTURE DU PROJET (CIBLE)
 
 ```
-fruits-advisor/
+stocksage/
 ├── api/                    # FastAPI routes
 │   ├── routes/
 │   └── main.py

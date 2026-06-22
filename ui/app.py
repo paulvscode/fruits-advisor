@@ -1,4 +1,4 @@
-"""Fruits Advisor — Interface MVP Streamlit."""
+"""StockSage — Interface MVP Streamlit."""
 
 import os
 import sys
@@ -19,8 +19,9 @@ init_db()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="Fruits Advisor", layout="wide")
-st.title("Fruits Advisor")
+st.set_page_config(page_title="StockSage", layout="wide")
+
+st.title("StockSage")
 st.caption("Outil d'aide à la commande — Réseau magasins bio")
 
 # ── Sidebar : import ──────────────────────────────────────────────────────────
@@ -66,11 +67,16 @@ with st.sidebar:
     st.markdown("- Email texte libre")
 
 # ── Parse ─────────────────────────────────────────────────────────────────────
+#
+# Streamlit reruns the whole script on every interaction (button click, etc.).
+# We persist the parsed result in session_state so it survives the rerun
+# triggered by "Enregistrer en base".
 
 result = None
 date_tarif = date.today()
 
 if uploaded:
+    # File stays in the uploader widget across reruns — re-parse each time.
     with st.spinner("Analyse en cours..."):
         suffix = Path(uploaded.name).suffix
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -84,6 +90,8 @@ if uploaded:
         finally:
             os.unlink(tmp_path)
     date_tarif = date_tarif_file
+    # A file import replaces any cached email result
+    st.session_state.pop("_email_result", None)
 
 elif parse_email_btn:
     if not fournisseur_email.strip():
@@ -93,7 +101,15 @@ elif parse_email_btn:
     else:
         with st.spinner("Analyse en cours..."):
             result = parse_email_text(email_text, fournisseur=fournisseur_email.strip())
+        # Cache so subsequent reruns (save button, etc.) still have the result
+        st.session_state["_email_result"] = result
+        st.session_state["_email_date_tarif"] = date_tarif_email
     date_tarif = date_tarif_email
+
+elif "_email_result" in st.session_state:
+    # Rerun triggered by another button (e.g. "Enregistrer") — restore cached result
+    result = st.session_state["_email_result"]
+    date_tarif = st.session_state.get("_email_date_tarif", date.today())
 
 if result is None:
     st.info("Importe une mercuriale dans le panneau de gauche pour commencer.")
@@ -141,6 +157,9 @@ if save_col.button(
 ):
     with SessionLocal() as session:
         merc_id = save_mercuriale(session, result, date_tarif)
+    # Clear cached email result so the next run shows the updated history
+    st.session_state.pop("_email_result", None)
+    st.session_state.pop("_email_date_tarif", None)
     st.success(
         f"Mercuriale enregistrée — ID {merc_id} | {result['fournisseur']} | "
         f"{date_tarif.strftime('%d/%m/%Y')} | {nb_fl} produits"
