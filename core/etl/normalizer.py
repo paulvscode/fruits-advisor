@@ -10,8 +10,9 @@ def extract_unit_weight_kg(name: str) -> float | None:
     """
     name_up = name.upper()
 
-    # "BARQ.125G", "BARQ. 125G", "(BARQ. 125G)"
-    m = re.search(r"BARQ\.?\s*(\d+)\s*G", name_up)
+    # "BARQ.125G", "BARQ 125G", "(BARQ.125G)", "BARQ·125G"
+    # [^\w]* handles any non-alphanumeric separator (ASCII dot, Unicode chars, spaces…)
+    m = re.search(r"BARQ[^\w]*(\d+)\s*G", name_up)
     if m:
         return int(m.group(1)) / 1000
 
@@ -50,7 +51,22 @@ def extract_unit_weight_kg(name: str) -> float | None:
     if m:
         return int(m.group(1)) / 1000
 
-    # "x 14 P", "x 16 P" with weight clue elsewhere — skip, not enough info
+    return None
+
+
+def extract_pieces_per_colis(name: str) -> int | None:
+    """
+    Detect explicit piece count per colis from product name.
+    Handles: 'x 27 PIECES', 'x 12 PCS', '× 6 UNITÉS', etc.
+    Returns the count, or None if not found.
+    """
+    m = re.search(
+        r"[x*×]\s*(\d+)\s*(?:PIECES?|PI[EÈ]CES?|PCS?|UNIT[EÉ]S?)\b",
+        name,
+        re.IGNORECASE,
+    )
+    if m:
+        return int(m.group(1))
     return None
 
 
@@ -73,17 +89,19 @@ def compute_pum(
         pum = prix_colis / colisage
         return round(pum, 4), "€/kg", None
 
-    # Unite == "UN" — try to find the actual weight per unit
+    # Unite == "UN" — try to find the actual weight per unit → PUM en €/kg
     unit_weight_kg = extract_unit_weight_kg(nom_produit)
-
     if unit_weight_kg:
-        # We can compute both PUM/kg and PUM/pce
         pum_kg = prix_colis / (colisage * unit_weight_kg)
-        pum_pce = prix_colis / colisage
-        # Return PUM/kg as primary (comparable across products)
         return round(pum_kg, 4), "€/kg", None
 
-    # Unknown unit weight — return PUM per piece only
+    # No weight found — try to extract piece count from the name → PUM en €/pce
+    piece_count = extract_pieces_per_colis(nom_produit)
+    if piece_count and piece_count > 0:
+        pum_pce = prix_colis / (colisage * piece_count)
+        return round(pum_pce, 4), "€/pce", None
+
+    # Unknown unit weight and no piece count — return PUM per declared unit only
     pum_pce = prix_colis / colisage
     return (
         round(pum_pce, 4),

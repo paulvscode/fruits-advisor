@@ -1,6 +1,6 @@
 """
 ETL parsers for supplier price files.
-Currently supports: Presto'Bio XLSX and PDF formats.
+Currently supports: Presto'Bio XLSX, Presto'Bio PDF, and free-form email text.
 """
 
 from __future__ import annotations
@@ -16,9 +16,8 @@ from core.etl.normalizer import compute_pum
 
 SUPPLIER_NAME = "Presto'Bio"
 
-# Sheets in the Presto'Bio XLSX
+# Sheet in the Presto'Bio XLSX
 SHEET_FL = "TARIF DEPART"
-SHEET_EPICERIE = "BASE TARIF EPICERIE"
 
 # Column indices in XLSX "TARIF DEPART" sheet
 COL_NOM = 0
@@ -28,13 +27,6 @@ COL_UNITE = 3
 COL_CERTIF = 4
 COL_PRIX_1_4 = 6
 COL_PRIX_5_PLUS = 7
-
-# Column indices in XLSX "BASE TARIF EPICERIE" sheet
-COL_EPIC_NOM = 0
-COL_EPIC_COLISAGE = 1
-COL_EPIC_UNITE = 2
-COL_EPIC_CERTIF = 3
-COL_EPIC_PRIX = 4
 
 VALID_CERTIFS = {"BIO", "EQ"}
 VALID_UNITES = {"KG", "UN"}
@@ -48,11 +40,6 @@ def _is_product_row_fl(row: pd.Series) -> bool:
     prix = pd.to_numeric(row[COL_PRIX_1_4], errors="coerce")
     return pd.notna(colisage) and pd.notna(prix)
 
-
-def _is_product_row_epicerie(row: pd.Series) -> bool:
-    colisage = pd.to_numeric(row[COL_EPIC_COLISAGE], errors="coerce")
-    prix = pd.to_numeric(row[COL_EPIC_PRIX], errors="coerce")
-    return pd.notna(colisage) and pd.notna(prix)
 
 
 def _clean_str(val) -> str:
@@ -167,56 +154,13 @@ def parse_prestobio_xlsx(filepath: str | Path) -> dict:
 
     df_fl = pd.DataFrame(records_fl)
 
-    # ── Sheet 2 : Épicerie ────────────────────────────────────────────────
-    df_epicerie = pd.DataFrame()
-    if SHEET_EPICERIE in xl.sheet_names:
-        raw_epic = xl.parse(SHEET_EPICERIE, header=None)
-        records_epic = []
-
-        for _, row in raw_epic.iterrows():
-            if not _is_product_row_epicerie(row):
-                continue
-
-            nom = _clean_str(row[COL_EPIC_NOM])
-            if not nom:
-                continue
-
-            colisage = _to_float(row[COL_EPIC_COLISAGE])
-            unite = _clean_str(row[COL_EPIC_UNITE]).upper()
-            certif = _clean_str(row[COL_EPIC_CERTIF]).upper()
-            prix = _to_float(row[COL_EPIC_PRIX])
-
-            if unite not in VALID_UNITES:
-                alertes.append(f"[Épicerie] Unité inconnue '{unite}' sur : {nom[:60]}")
-                unite = "UN"
-
-            pum, unite_pum, alerte_pum = compute_pum(prix, colisage, unite, nom)
-            if alerte_pum:
-                alertes.append(f"[Épicerie] {alerte_pum} — {nom[:60]}")
-
-            records_epic.append({
-                "fournisseur": SUPPLIER_NAME,
-                "nom_produit": nom,
-                "origine": "",
-                "local": False,
-                "colisage": colisage,
-                "unite": unite,
-                "certification": certif if certif in VALID_CERTIFS else "BIO",
-                "prix_colis_1_4": prix,
-                "prix_colis_5_plus": None,
-                "pum": pum,
-                "unite_pum": unite_pum,
-                "categorie": "EPICERIE",
-            })
-
-        df_epicerie = pd.DataFrame(records_epic)
-
     return {
         "fournisseur": SUPPLIER_NAME,
         "validite_du": date_du,
         "validite_au": date_au,
+        "source_format": "xlsx",
         "produits_fl": df_fl,
-        "produits_epicerie": df_epicerie,
+        "produits_epicerie": pd.DataFrame(),
         "alertes": alertes,
     }
 
@@ -396,6 +340,110 @@ def parse_prestobio_pdf(filepath: str | Path) -> dict:
         "fournisseur": SUPPLIER_NAME,
         "validite_du": date_du,
         "validite_au": date_au,
+        "source_format": "pdf",
+        "produits_fl": pd.DataFrame(records),
+        "produits_epicerie": pd.DataFrame(),
+        "alertes": alertes,
+    }
+
+
+# ── Email / free-text parser ──────────────────────────────────────────────────
+
+# Matches: "Produit (détail) : 1.90 €/kg"  or  "Produit: 0,95 €/p"
+_EMAIL_LINE_RE = re.compile(
+    r"^(.+?)\s*:\s*(\d+[,.]?\d*)\s*€\s*/\s*([\w]+)\s*$",
+    re.IGNORECASE,
+)
+
+# Known unit abbreviations → internal standard
+_EMAIL_UNIT_MAP: dict[str, str] = {
+    "kg": "KG",
+    "bts": "UN", "botte": "UN", "bottes": "UN",
+    "p": "UN", "pce": "UN", "pièce": "UN", "piece": "UN", "pièces": "UN",
+    "u": "UN", "un": "UN", "unité": "UN", "unites": "UN",
+    "barq": "UN", "barquette": "UN",
+    "sachet": "UN", "sac": "UN",
+    "bch": "UN", "bouquet": "UN",
+    "filet": "UN", "plateau": "UN",
+    "pot": "UN", "pots": "UN",
+    "tête": "UN", "tete": "UN",
+}
+
+
+def parse_email_text(text: str, fournisseur: str = "Email") -> dict:
+    """
+    Parse a free-form email mercuriale.
+
+    Expected line format (one product per line):
+        Carotte : 1.9 €/bts
+        Betterave : 2.2 €/kg
+        Feuille de chêne rouge: 0.95 €/p
+
+    Header/footer lines that don't match are silently skipped.
+    The price in the email is already the unit price (PUM), colisage = 1.
+    """
+    records: list[dict] = []
+    alertes: list[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        m = _EMAIL_LINE_RE.match(line)
+        if not m:
+            continue
+
+        nom = m.group(1).strip()
+        prix_str = m.group(2).replace(",", ".")
+        unite_raw = m.group(3).lower().strip()
+
+        try:
+            prix = float(prix_str)
+        except ValueError:
+            alertes.append(f"Prix invalide : {line[:60]}")
+            continue
+
+        unite = _EMAIL_UNIT_MAP.get(unite_raw)
+        if unite is None:
+            alertes.append(f"Unité non reconnue '{unite_raw}' — {nom[:50]} (traité comme UN)")
+            unite = "UN"
+
+        if unite == "KG":
+            pum, unite_pum = round(prix, 4), "€/kg"
+        else:
+            # Try to extract weight from product name for €/kg conversion
+            from core.etl.normalizer import extract_unit_weight_kg
+            w = extract_unit_weight_kg(nom)
+            if w:
+                pum, unite_pum = round(prix / w, 4), "€/kg"
+            else:
+                pum, unite_pum = round(prix, 4), "€/pce"
+                alertes.append(f"Poids unitaire inconnu — PUM en €/pce : {nom[:50]}")
+
+        records.append({
+            "fournisseur": fournisseur,
+            "nom_produit": nom,
+            "origine": "",
+            "local": False,
+            "colisage": 1.0,
+            "unite": unite,
+            "certification": "BIO",
+            "prix_colis_1_4": prix,
+            "prix_colis_5_plus": None,
+            "pum": pum,
+            "unite_pum": unite_pum,
+            "categorie": "FL_FRAIS",
+        })
+
+    if not records:
+        alertes.append("Aucun produit reconnu — vérifier le format (attendu : 'Nom : prix €/unité').")
+
+    return {
+        "fournisseur": fournisseur,
+        "validite_du": "",
+        "validite_au": "",
+        "source_format": "email",
         "produits_fl": pd.DataFrame(records),
         "produits_epicerie": pd.DataFrame(),
         "alertes": alertes,
